@@ -20,6 +20,8 @@ app.get("/", (req, res) => {
     res.send("App is running");
 });
 
+
+
 // MongoDB Client
 const client = new MongoClient(uri, {
     serverApi: {
@@ -32,9 +34,43 @@ const client = new MongoClient(uri, {
 // Run Function
 async function run() {
     try {
-        await client.connect(); // ✔ Correct
+        await client.connect(); 
+
+        const db = client.db("AssetVerseDB");
+
+        const userCollection = db.collection("UserInfo");
+
+
+        // get user information
+        app.get("/user", async (req , res) => {
+
+            const query = {};
+
+            const {email} = req.query;
+
+            if(email){
+                query.email = email;
+            }
+            const cursor = userCollection.find(query);
+            const result = await cursor.toArray();
+            res.send(result)
+        })
+
+        // storing user information information
+        app.post("/user", async (req, res) => {
+            const userInfo = req.body;
+
+            const result = await userCollection.insertOne(userInfo);
+            res.send(result)
+        })
+
+
         await client.db("admin").command({ ping: 1 });
         console.log("Database connected successfully");
+
+
+
+
     } catch (error) {
         console.error("Database connection failed:", error);
     }
