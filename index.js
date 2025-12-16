@@ -1,4 +1,4 @@
-require('dotenv').config();
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
@@ -10,74 +10,72 @@ const app = express();
 
 // Middlewares
 app.use(express.json());
-app.use(cors({
-    origin : ["http://localhost:5173"],
-    credentials : true
-}));
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+    credentials: true,
+  })
+);
 
 // Routes
 app.get("/", (req, res) => {
-    res.send("App is running");
+  res.send("App is running");
 });
-
-
 
 // MongoDB Client
 const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-    }
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
 });
 
 // Run Function
 async function run() {
-    try {
-        await client.connect(); 
+  try {
+    await client.connect();
 
-        const db = client.db("AssetVerseDB");
+    const db = client.db("AssetVerseDB");
 
-        const userCollection = db.collection("UserInfo");
+    const userCollection = db.collection("UserInfo");
 
+    // get user information
+    app.get("/user", async (req, res) => {
+      const query = {};
 
-        // get user information
-        app.get("/user", async (req , res) => {
+      const { email } = req.query;
 
-            const query = {};
+      if (email) {
+        query.email = email;
+      }
+      const cursor = userCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
 
-            const {email} = req.query;
+    // storing user information information
+    app.post("/user", async (req, res) => {
+      const userInfo = req.body;
+      // checking that the user is HR or Employe
+      if (userInfo.role === "HR") {
+        userInfo.subscription = "basic";
+        userInfo.packageLimit = 5;
+        userInfo.currentEmployees = 0;
+      }
+      const result = await userCollection.insertOne(userInfo);
+      res.send(result);
+    });
 
-            if(email){
-                query.email = email;
-            }
-            const cursor = userCollection.find(query);
-            const result = await cursor.toArray();
-            res.send(result)
-        })
-
-        // storing user information information
-        app.post("/user", async (req, res) => {
-            const userInfo = req.body;
-
-            const result = await userCollection.insertOne(userInfo);
-            res.send(result)
-        })
-
-
-        await client.db("admin").command({ ping: 1 });
-        console.log("Database connected successfully");
-
-
-
-
-    } catch (error) {
-        console.error("Database connection failed:", error);
-    }
+    await client.db("admin").command({ ping: 1 });
+    console.log("Database connected successfully");
+  } catch (error) {
+    console.error("Database connection failed:", error);
+  }
 }
 run().catch(console.dir);
 
 // Start Server
 app.listen(port, () => {
-    console.log(`App is running on port: ${port}`);
+  console.log(`App is running on port: ${port}`);
 });
