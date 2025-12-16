@@ -8,7 +8,7 @@ const uri = process.env.URI;
 
 const app = express();
 
-// Middlewares
+//  MIDDLEWARES 
 app.use(express.json());
 app.use(
   cors({
@@ -17,12 +17,12 @@ app.use(
   })
 );
 
-// Routes
+//  BASIC ROUTE 
 app.get("/", (req, res) => {
-  res.send("App is running");
+  res.send("AssetVerse server is running");
 });
 
-// MongoDB Client
+//  MONGODB CLIENT 
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -31,51 +31,130 @@ const client = new MongoClient(uri, {
   },
 });
 
-// Run Function
 async function run() {
   try {
     await client.connect();
 
     const db = client.db("AssetVerseDB");
-
     const userCollection = db.collection("UserInfo");
 
-    // get user information
+
+
+    //  GET USER 
     app.get("/user", async (req, res) => {
-      const query = {};
+      try {
+        const query = {};
+        const { email } = req.query;
 
-      const { email } = req.query;
+        if (email) {
+          query.email = email;
+        }
 
-      if (email) {
-        query.email = email;
+        const result = await userCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          success: false,
+          message: "Failed to fetch users",
+        });
       }
-      const cursor = userCollection.find(query);
-      const result = await cursor.toArray();
-      res.send(result);
     });
 
-    // storing user information information
-    app.post("/user", async (req, res) => {
-      const userInfo = req.body;
-      // checking that the user is HR or Employe
-      if (userInfo.role === "HR") {
-        userInfo.subscription = "basic";
-        userInfo.packageLimit = 5;
-        userInfo.currentEmployees = 0;
+    //  VALIDATE USER 
+    app.post("/user/validate", async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        if (!email) {
+          return res.status(400).send({
+            success: false,
+            message: "Email is required",
+          });
+        }
+
+        const existingUser = await userCollection.findOne({ email });
+
+        if (existingUser) {
+          return res.status(409).send({
+            success: false,
+            message: "User already exists in database",
+          });
+        }
+
+        res.send({ success: true });
+      } catch (error) {
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
       }
-      const result = await userCollection.insertOne(userInfo);
-      res.send(result);
+    });
+
+    //  CREATE USER 
+    app.post("/user", async (req, res) => {
+      try {
+        let userInfo = req.body;
+
+        if (!userInfo.email) {
+          return res.status(400).send({
+            success: false,
+            message: "Email is required",
+          });
+        }
+
+        const existingUser = await userCollection.findOne({
+          email: userInfo.email,
+        });
+
+        if (existingUser) {
+          return res.status(409).send({
+            success: false,
+            message: "User already exists",
+          });
+        }
+
+        // HR default fields
+        if (userInfo.role === "HR") {
+          userInfo = {
+            ...userInfo,
+            subscription: "basic",
+            packageLimit: 5,
+            currentEmployees: 0,
+          };
+        }
+
+        const result = await userCollection.insertOne(userInfo);
+
+        res.status(201).send({
+          success: true,
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        // duplicate key error fallback
+        if (error.code === 11000) {
+          return res.status(409).send({
+            success: false,
+            message: "User already exists",
+          });
+        }
+
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
+      }
     });
 
     await client.db("admin").command({ ping: 1 });
-    console.log("Database connected successfully");
+    console.log("MongoDB connected successfully");
   } catch (error) {
-    console.error("Database connection failed:", error);
+    console.error(" Database connection failed:", error);
   }
 }
+
 run().catch(console.dir);
 
-// Start Server
+//  START SERVER 
 app.listen(port, () => {
-  console.log(`App is running on port: ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
