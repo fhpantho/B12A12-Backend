@@ -108,6 +108,7 @@ async function run() {
           role,
           companyName,
           companyLogo,
+          photo,
           dateOfBirth,
         } = req.body;
 
@@ -137,6 +138,8 @@ async function run() {
           createdAt: new Date(),
         };
 
+        
+
         // HR DEFAULT FIELDS
         if (normalizedRole === "HR") {
           userInfo = {
@@ -146,7 +149,17 @@ async function run() {
             subscription: "basic",
             packageLimit: 5,
             currentEmployees: 0,
-          };
+          }
+        ;
+        }
+
+        // CHECKING IS THE USER IS EMPLOY
+        else if(normalizedRole === "EMPLOYEE")
+        {
+          userInfo = {
+            ...userInfo,
+            photo,
+          }
         }
 
         const result = await userCollection.insertOne(userInfo);
