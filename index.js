@@ -8,7 +8,9 @@ const uri = process.env.URI;
 
 const app = express();
 
-//  MIDDLEWARES 
+/* =======================
+   MIDDLEWARES
+======================= */
 app.use(express.json());
 app.use(
   cors({
@@ -17,12 +19,16 @@ app.use(
   })
 );
 
-//  BASIC ROUTE 
+/* =======================
+   BASIC ROUTE
+======================= */
 app.get("/", (req, res) => {
   res.send("AssetVerse server is running");
 });
 
-//  MONGODB CLIENT 
+/* =======================
+   MONGODB CLIENT
+======================= */
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -38,20 +44,18 @@ async function run() {
     const db = client.db("AssetVerseDB");
     const userCollection = db.collection("UserInfo");
 
+    console.log("✅ MongoDB connected successfully");
 
-
-    //  GET USER 
+    /* =======================
+       GET USER (by email optional)
+    ======================= */
     app.get("/user", async (req, res) => {
       try {
-        const query = {};
         const { email } = req.query;
+        const query = email ? { email } : {};
 
-        if (email) {
-          query.email = email;
-        }
-
-        const result = await userCollection.find(query).toArray();
-        res.send(result);
+        const users = await userCollection.find(query).toArray();
+        res.send(users);
       } catch (error) {
         res.status(500).send({
           success: false,
@@ -60,7 +64,7 @@ async function run() {
       }
     });
 
-    //  VALIDATE USER 
+    /*  VALIDATE USER */
     app.post("/user/validate", async (req, res) => {
       try {
         const { email } = req.body;
@@ -71,13 +75,18 @@ async function run() {
             message: "Email is required",
           });
         }
+        // app.post("/user/loginValidation", async (req, res) => {
+        //   try {
 
-        const existingUser = await userCollection.findOne({ email });
+        //   }
+        // });
 
-        if (existingUser) {
+        const user = await userCollection.findOne({ email });
+
+        if (user) {
           return res.status(409).send({
             success: false,
-            message: "User already exists in database",
+            message: "User already exists",
           });
         }
 
@@ -90,22 +99,26 @@ async function run() {
       }
     });
 
-    //  CREATE USER 
+    /* CREATE USER*/
     app.post("/user", async (req, res) => {
       try {
-        let userInfo = req.body;
+        const {
+          name,
+          email,
+          role,
+          companyName,
+          companyLogo,
+          dateOfBirth,
+        } = req.body;
 
-        if (!userInfo.email) {
+        if (!email || !role) {
           return res.status(400).send({
             success: false,
-            message: "Email is required",
+            message: "Email and role are required",
           });
         }
 
-        const existingUser = await userCollection.findOne({
-          email: userInfo.email,
-        });
-
+        const existingUser = await userCollection.findOne({ email });
         if (existingUser) {
           return res.status(409).send({
             success: false,
@@ -113,10 +126,23 @@ async function run() {
           });
         }
 
-        // HR default fields
-        if (userInfo.role === "HR") {
+        const normalizedRole = role.toUpperCase();
+
+        // Base allowed fields
+        let userInfo = {
+          name,
+          email,
+          role: normalizedRole,
+          dateOfBirth,
+          createdAt: new Date(),
+        };
+
+        // HR DEFAULT FIELDS
+        if (normalizedRole === "HR") {
           userInfo = {
             ...userInfo,
+            companyName,
+            companyLogo,
             subscription: "basic",
             packageLimit: 5,
             currentEmployees: 0,
@@ -130,7 +156,6 @@ async function run() {
           insertedId: result.insertedId,
         });
       } catch (error) {
-        // duplicate key error fallback
         if (error.code === 11000) {
           return res.status(409).send({
             success: false,
@@ -145,8 +170,8 @@ async function run() {
       }
     });
 
+    // MongoDB ping
     await client.db("admin").command({ ping: 1 });
-    console.log("MongoDB connected successfully");
   } catch (error) {
     console.error(" Database connection failed:", error);
   }
@@ -154,7 +179,7 @@ async function run() {
 
 run().catch(console.dir);
 
-//  START SERVER 
+/* START SERVER */
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(` Server running on port ${port}`);
 });
