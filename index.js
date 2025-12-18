@@ -250,6 +250,23 @@ app.post("/assetcollection", async (req, res) => {
   }
 });
 
+// Get all the asset 
+  app.get("/assetcollection", async(req, res) => {
+    try{
+
+      const result = await assetCollection.find().toArray();
+      res.send(result)
+
+    }
+    catch(error){
+
+      res.status(500).send("Failed to collect all assets");
+
+
+    }
+    
+  })
+
     // MongoDB ping
     await client.db("admin").command({ ping: 1 });
   } catch (error) {
