@@ -8,9 +8,7 @@ const uri = process.env.URI;
 
 const app = express();
 
-/* =======================
-   MIDDLEWARES
-======================= */
+/* MIDDLEWARES */
 app.use(express.json());
 app.use(
   cors({
@@ -19,16 +17,12 @@ app.use(
   })
 );
 
-/* =======================
-   BASIC ROUTE
-======================= */
+/* BASIC ROUTE */
 app.get("/", (req, res) => {
   res.send("AssetVerse server is running");
 });
 
-/* =======================
-   MONGODB CLIENT
-======================= */
+/* MONGODB CLIENT */
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -43,12 +37,11 @@ async function run() {
 
     const db = client.db("AssetVerseDB");
     const userCollection = db.collection("UserInfo");
+    const assetCollection = db.collection("assetCollection")
 
     console.log("✅ MongoDB connected successfully");
 
-    /* =======================
-       GET USER (by email optional)
-    ======================= */
+    /*GET USER (by email optional)*/
     app.get("/user", async (req, res) => {
       try {
         const { email } = req.query;
@@ -64,6 +57,9 @@ async function run() {
       }
     });
 
+    // get asset by Email 
+    
+
     /*  VALIDATE USER */
     app.post("/user/validate", async (req, res) => {
       try {
@@ -75,11 +71,6 @@ async function run() {
             message: "Email is required",
           });
         }
-        // app.post("/user/loginValidation", async (req, res) => {
-        //   try {
-
-        //   }
-        // });
 
         const user = await userCollection.findOne({ email });
 
@@ -182,6 +173,82 @@ async function run() {
         });
       }
     });
+
+   // ADD NEW ASSET (POST) - SECURED FOR HR ONLY
+app.post("/assetcollection", async (req, res) => {
+  try {
+    const {
+      productName,
+      productImage,
+      productType,
+      productQuantity,
+      hrEmail,        
+      companyName,
+    } = req.body;
+
+    // Basic field validation
+    if (!productName || !productImage || !productType || !productQuantity || !hrEmail || !companyName) {
+      return res.status(400).send({
+        success: false,
+        message: "All fields are required",
+      });
+    }
+
+    if (!["Returnable", "Non-returnable"].includes(productType)) {
+      return res.status(400).send({
+        success: false,
+        message: "Product type must be 'Returnable' or 'Non-returnable'",
+      });
+    }
+
+    //  SECURITY CHECK: Verify the user is a real HR 
+    const user = await userCollection.findOne({ 
+      email: hrEmail,
+      role: "HR" 
+    });
+
+    if (!user) {
+      return res.status(403).send({
+        success: false,
+        message: "Unauthorized: Only verified HR users can add assets",
+      });
+    }
+
+    // verify company name matches
+    if (user.companyName !== companyName) {
+      return res.status(403).send({
+        success: false,
+        message: "Unauthorized: Company name does not match your account",
+      });
+    }
+
+    //  All checks passed - Add the asset 
+    const newAsset = {
+      productName,
+      productImage,
+      productType,
+      productQuantity: Number(productQuantity),
+      availableQuantity: Number(productQuantity),
+      dateAdded: new Date(),
+      hrEmail,
+      companyName,
+    };
+
+    const result = await assetCollection.insertOne(newAsset);
+
+    res.status(201).send({
+      success: true,
+      message: "Asset added successfully",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Error adding asset:", error);
+    res.status(500).send({
+      success: false,
+      message: "Failed to add asset",
+    });
+  }
+});
 
     // MongoDB ping
     await client.db("admin").command({ ping: 1 });
