@@ -291,11 +291,97 @@ app.post("/assetcollection", async (req, res) => {
   }
 });
 
-  // Pacth the asset (HR only Protected)
+  // PATCH: Update an asset (HR only)
+app.patch("/assetcollection/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { productName, productQuantity, productImage, hrEmail } = req.body;
 
-  app.patch("assetcollection" async(req, res) => {
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid asset ID",
+      });
+    }
 
-  })
+    // Required fields check
+    if (!hrEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail is required for authorization",
+      });
+    }
+
+    // At least one field to update
+    if (!productName && !productQuantity && !productImage) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one field (productName, productQuantity, or productImage) is required to update",
+      });
+    }
+
+    // Find the asset
+    const asset = await assetCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!asset) {
+      return res.status(404).json({
+        success: false,
+        message: "Asset not found",
+      });
+    }
+
+    // Authorization: Only the HR who added this asset can update it
+    if (asset.hrEmail !== hrEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You can only update assets you added",
+      });
+    }
+
+    // Build update object (only allowed fields)
+    const updateFields = {};
+    if (productName) updateFields.productName = productName.trim();
+    if (productImage) updateFields.productImage = productImage;
+    if (productQuantity !== undefined) {
+      const qty = Number(productQuantity);
+      if (isNaN(qty) || qty < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "productQuantity must be a non-negative number",
+        });
+      }
+      updateFields.productQuantity = qty;
+      updateFields.availableQuantity = qty; // Sync available quantity
+    }
+
+    // Perform the update
+    const result = await assetCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Asset not found during update",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Asset updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+
+  } catch (error) {
+    console.error("Error updating asset:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update asset",
+    });
+  }
+});
 
   // Request API 
 
@@ -349,6 +435,12 @@ app.post("/asset-requests", async (req, res) => {
     if (existingRequest) {
       return res.status(409).send({
         message: "You have already requested this asset. Please wait for approval or cancellation.",
+      });
+    }
+
+    if(assetInfo.productQuantity < 1){
+      return res.status(409).send({
+        massage : "The asset is not available"
       });
     }
 
