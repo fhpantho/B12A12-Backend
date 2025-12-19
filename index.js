@@ -254,30 +254,48 @@ app.post("/assetcollection", async (req, res) => {
 });
 
 // Get all the asset  and emailbased asset 
-  app.get("/assetcollection", async(req, res) => {
-    try{
-      const {email} = req.query;
-    // Validate email query param
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email query parameter is required",
-      });
+ app.get("/assetcollection", async (req, res) => {
+  try {
+    const { email, search } = req.query;
+
+    // Build dynamic query
+    const query = {};
+
+    // Filter by HR email 
+    if (email) {
+      query.hrEmail = email;
     }
-    const query = {'hrEmail' : email}
 
-      const result = await assetCollection.find(query).toArray();
-      res.send(result)
-
+    // Search by product name
+    if (search) {
+      query.productName = { $regex: search.trim(), $options: "i" }; 
     }
-    catch(error){
 
-      res.status(500).send("Failed to collect all assets");
+    // If no filters provided, return all assets
+    const result = await assetCollection.find(query).toArray();
 
 
-    }
-    
-  });
+
+    res.status(200).json({
+      success: true,
+      count: result.length,
+      data: result,
+    });
+
+  } catch (error) {
+    console.error("Error fetching assets:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch assets",
+    });
+  }
+});
+
+  // Pacth the asset (HR only Protected)
+
+  app.patch("assetcollection" async(req, res) => {
+
+  })
 
   // Request API 
 
