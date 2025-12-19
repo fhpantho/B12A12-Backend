@@ -312,6 +312,19 @@ app.post("/asset-requests", async (req, res) => {
       });
     }
 
+    /* ===== PREVENT DUPLICATE REQUEST ===== */
+    const existingRequest = await requestCollection.findOne({
+      assetId: new ObjectId(assetId),
+      requesterEmail: requesterEmail,
+      requestStatus: { $in: ["pending", "approved"] }, 
+    });
+
+    if (existingRequest) {
+      return res.status(409).send({
+        message: "You have already requested this asset. Please wait for approval or cancellation.",
+      });
+    }
+
     /* ===== CREATE REQUEST DOC ===== */
     const requestDoc = {
       assetId: new ObjectId(assetId),
@@ -341,7 +354,58 @@ app.post("/asset-requests", async (req, res) => {
   }
 });
 
-// Collect the reuested asset employee by email 
+// GET: Fetch asset requests based on user's email and role
+app.get("/asset-requests", async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    // Validate email query param
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email query parameter is required",
+      });
+    }
+
+    // Find the user
+    const user = await userCollection.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Determine which field to query based on role
+    let query = {};
+    if (user.role === "EMPLOYEE") {
+      query = { requesterEmail: email };
+    } else if (user.role === "HR") {
+      query = { hrEmail: email };
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid user role",
+      });
+    }
+
+    // Fetch requests
+    const requestedAssets = await requestCollection.find(query).toArray();
+
+    res.status(200).json({
+      success: true,
+      data: requestedAssets,
+    });
+
+  } catch (error) {
+    console.error("Error fetching asset requests:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching requests",
+    });
+  }
+});
 
 
 
