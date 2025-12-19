@@ -253,11 +253,20 @@ app.post("/assetcollection", async (req, res) => {
   }
 });
 
-// Get all the asset 
+// Get all the asset  and emailbased asset 
   app.get("/assetcollection", async(req, res) => {
     try{
+      const {email} = req.query;
+    // Validate email query param
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email query parameter is required",
+      });
+    }
+    const query = {'hrEmail' : email}
 
-      const result = await assetCollection.find().toArray();
+      const result = await assetCollection.find(query).toArray();
       res.send(result)
 
     }
