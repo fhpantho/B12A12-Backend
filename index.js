@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 
+  const { ObjectId } = require("mongodb");
+
 const port = process.env.PORT || 5000;
 const uri = process.env.URI;
 
@@ -38,6 +40,7 @@ async function run() {
     const db = client.db("AssetVerseDB");
     const userCollection = db.collection("UserInfo");
     const assetCollection = db.collection("assetCollection")
+    const requestCollection = db.collection("requestCollection");
 
     console.log("✅ MongoDB connected successfully");
 
@@ -265,7 +268,83 @@ app.post("/assetcollection", async (req, res) => {
 
     }
     
-  })
+  });
+
+  // Request API 
+
+
+
+app.post("/asset-requests", async (req, res) => {
+  try {
+    const {
+      assetId,
+      requesterEmail,
+      note
+    } = req.body;
+
+    /* ===== BASIC VALIDATION ===== */
+    if (
+      !assetId ||
+
+      !requesterEmail
+    ) {
+      return res.status(400).send({
+        message: "Missing required fields",
+      });
+    }
+
+    /* ===== FIND USER BY EMAIL ===== */
+    const user = await userCollection.findOne({ email: requesterEmail });
+
+    if (!user) {
+      return res.status(404).send({
+        message: "Requester not found",
+      });
+    }
+    /* ===== FIND ASSET INFO BY ID===== */
+
+    const assetInfo = await assetCollection.findOne({_id : new ObjectId(assetId)})
+
+    /* ===== ROLE CHECK ===== */
+    if (user.role !== "EMPLOYEE") {
+      return res.status(403).send({
+        message: "Only employees can request assets",
+      });
+    }
+
+    /* ===== CREATE REQUEST DOC ===== */
+    const requestDoc = {
+      assetId: new ObjectId(assetId),
+      assetName : assetInfo.productName,
+      assetType : assetInfo.productType,
+      requesterName: user.name,
+      requesterEmail: user.email,
+      hrEmail : assetInfo.hrEmail,
+      companyName : assetInfo.companyName,
+      requestDate: new Date(),
+      approvalDate: null,
+      requestStatus: "pending",
+      note: note || "",
+    };
+
+    const result = await requestCollection.insertOne(requestDoc);
+
+    res.status(201).send({
+      message: "Asset request submitted successfully",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({
+      message: "Failed to submit asset request",
+    });
+  }
+});
+
+// Collect the reuested asset employee by email 
+
+
+
 
     // MongoDB ping
     await client.db("admin").command({ ping: 1 });
