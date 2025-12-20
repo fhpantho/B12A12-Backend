@@ -41,6 +41,7 @@ async function run() {
     const userCollection = db.collection("UserInfo");
     const assetCollection = db.collection("assetCollection")
     const requestCollection = db.collection("requestCollection");
+    const affilationCollection = db.collection("affilationCollection")
 
     console.log("✅ MongoDB connected successfully");
 
@@ -253,44 +254,33 @@ app.post("/assetcollection", async (req, res) => {
   }
 });
 
-// Get all the asset  and emailbased asset 
- app.get("/assetcollection", async (req, res) => {
+// GET: Fetch available assets (for employees) or HR-specific assets
+app.get("/assetcollection", async (req, res) => {
   try {
     const { email, search } = req.query;
-
-    // Build dynamic query
     const query = {};
 
-    // Filter by HR email 
     if (email) {
-      query.hrEmail = email;
+      query.hrEmail = email; // HR sees all their assets
+    } else {
+      query.productQuantity = { $gt: 0 }; // Employees see only available
     }
 
-    // Search by product name
     if (search) {
-      query.productName = { $regex: search.trim(), $options: "i" }; 
+      query.productName = { $regex: search.trim(), $options: "i" };
     }
 
-    // If no filters provided, return all assets
     const result = await assetCollection.find(query).toArray();
-
-
 
     res.status(200).json({
       success: true,
       count: result.length,
       data: result,
     });
-
   } catch (error) {
-    console.error("Error fetching assets:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch assets",
-    });
+    res.status(500).json({ success: false, message: "Failed to fetch assets" });
   }
 });
-
   // PATCH: Update an asset (HR only)
 app.patch("/assetcollection/:id", async (req, res) => {
   try {
@@ -382,6 +372,86 @@ app.patch("/assetcollection/:id", async (req, res) => {
     });
   }
 });
+//  Remove an asset (HR only)
+app.delete("/assetcollection/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { hrEmail } = req.body; 
+
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid asset ID",
+      });
+    }
+
+    // Required authorization
+    if (!hrEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail is required for authorization",
+      });
+    }
+
+    // Find the asset first
+    const asset = await assetCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!asset) {
+      return res.status(404).json({
+        success: false,
+        message: "Asset not found",
+      });
+    }
+
+    // Authorization: Only the HR who added this asset can delete it
+    if (asset.hrEmail !== hrEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You can only delete assets you added",
+      });
+    }
+
+    // SAFETY CHECK: Prevent deleting assets that have active requests
+    const activeRequests = await requestCollection.find({
+      assetId: new ObjectId(id),
+      requestStatus: { $in: ["pending", "approved"] }, // Block if pending or approved
+    }).count();
+
+    if (activeRequests > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete asset. ${activeRequests} active request(s) exist for this asset. Please resolve them first.`,
+        activeRequestsCount: activeRequests,
+      });
+    }
+
+    // Perform the deletion
+    const result = await assetCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Asset not found during deletion",
+      });
+    }
+
+
+
+    res.status(200).json({
+      success: true,
+      message: "Asset deleted successfully",
+      deletedCount: result.deletedCount,
+    });
+
+  } catch (error) {
+    console.error("Error deleting asset:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete asset",
+    });
+  }
+});
 
   // Request API 
 
@@ -389,70 +459,66 @@ app.patch("/assetcollection/:id", async (req, res) => {
 
 app.post("/asset-requests", async (req, res) => {
   try {
-    const {
-      assetId,
-      requesterEmail,
-      note
-    } = req.body;
+    const { assetId, requesterEmail, note } = req.body;
 
-    /* ===== BASIC VALIDATION ===== */
-    if (
-      !assetId ||
-
-      !requesterEmail
-    ) {
-      return res.status(400).send({
+    if (!assetId || !requesterEmail) {
+      return res.status(400).json({
         message: "Missing required fields",
       });
     }
 
-    /* ===== FIND USER BY EMAIL ===== */
+    // Find user
     const user = await userCollection.findOne({ email: requesterEmail });
-
-    if (!user) {
-      return res.status(404).send({
-        message: "Requester not found",
-      });
-    }
-    /* ===== FIND ASSET INFO BY ID===== */
-
-    const assetInfo = await assetCollection.findOne({_id : new ObjectId(assetId)})
-
-    /* ===== ROLE CHECK ===== */
-    if (user.role !== "EMPLOYEE") {
-      return res.status(403).send({
+    if (!user || user.role !== "EMPLOYEE") {
+      return res.status(403).json({
         message: "Only employees can request assets",
       });
     }
 
-    /* ===== PREVENT DUPLICATE REQUEST ===== */
+    // Find asset
+    const assetInfo = await assetCollection.findOne({ _id: new ObjectId(assetId) });
+    if (!assetInfo) {
+      return res.status(404).json({ message: "Asset not found" });
+    }
+
+    if (assetInfo.productQuantity <= 0) {
+      return res.status(400).json({ message: "This asset is out of stock" });
+    }
+
+    // CRITICAL: Prevent re-request after rejection
     const existingRequest = await requestCollection.findOne({
       assetId: new ObjectId(assetId),
       requesterEmail: requesterEmail,
-      requestStatus: { $in: ["pending", "approved"] }, 
+      requestStatus: { $in: ["pending", "approved", "rejected"] }, // Now includes rejected!
     });
 
     if (existingRequest) {
-      return res.status(409).send({
-        message: "You have already requested this asset. Please wait for approval or cancellation.",
-      });
+      if (existingRequest.requestStatus === "pending") {
+        return res.status(409).json({
+          message: "You already have a pending request for this asset.",
+        });
+      }
+      if (existingRequest.requestStatus === "approved") {
+        return res.status(409).json({
+          message: "This asset has already been approved for you.",
+        });
+      }
+      if (existingRequest.requestStatus === "rejected") {
+        return res.status(403).json({
+          message: "Your previous request for this asset was rejected. You cannot request it again.",
+        });
+      }
     }
 
-    if(assetInfo.productQuantity < 1){
-      return res.status(409).send({
-        massage : "The asset is not available"
-      });
-    }
-
-    /* ===== CREATE REQUEST DOC ===== */
+    // Create new request
     const requestDoc = {
       assetId: new ObjectId(assetId),
-      assetName : assetInfo.productName,
-      assetType : assetInfo.productType,
+      assetName: assetInfo.productName,
+      assetType: assetInfo.productType,
       requesterName: user.name,
       requesterEmail: user.email,
-      hrEmail : assetInfo.hrEmail,
-      companyName : assetInfo.companyName,
+      hrEmail: assetInfo.hrEmail,
+      companyName: assetInfo.companyName,
       requestDate: new Date(),
       approvalDate: null,
       requestStatus: "pending",
@@ -461,18 +527,98 @@ app.post("/asset-requests", async (req, res) => {
 
     const result = await requestCollection.insertOne(requestDoc);
 
-    res.status(201).send({
+    res.status(201).json({
       message: "Asset request submitted successfully",
       insertedId: result.insertedId,
     });
   } catch (error) {
     console.error(error);
-    res.status(500).send({
+    res.status(500).json({
       message: "Failed to submit asset request",
     });
   }
 });
 
+//  Reject an asset request (HR only)
+app.patch("/asset-request/reject/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { hrEmail } = req.body; // HR email sent from frontend for authorization
+
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request ID",
+      });
+    }
+
+    // HR email is required for authorization
+    if (!hrEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail is required for authorization",
+      });
+    }
+
+    // Find the request
+    const request = await requestCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Asset request not found",
+      });
+    }
+
+    // Authorization: Only the HR responsible for this asset/company can reject
+    if (request.hrEmail !== hrEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You can only manage requests for your company assets",
+      });
+    }
+
+    // Only pending requests can be rejected
+    if (request.requestStatus !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reject a request that is already ${request.requestStatus}`,
+      });
+    }
+
+    // Update the request status to "rejected"
+    const result = await requestCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          requestStatus: "rejected",
+          rejectionDate: new Date(), //
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found during update",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Asset request rejected successfully",
+      modifiedCount: result.modifiedCount,
+    });
+
+  } catch (error) {
+    console.error("Error rejecting asset request:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to reject request",
+    });
+  }
+});
 // GET: Fetch asset requests based on user's email and role
 app.get("/asset-requests", async (req, res) => {
   try {
