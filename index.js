@@ -971,6 +971,94 @@ app.get("/analytics/top-requested", async (req, res) => {
   }
 });
 
+
+// PATCH: Direct asset assignment by HR to affiliated employee
+app.patch("/direct-assign", async (req, res) => {
+  try {
+    const { hrEmail, employeeEmail, assetId } = req.body;
+
+    if (!hrEmail || !employeeEmail || !assetId) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail, employeeEmail, and assetId are required",
+      });
+    }
+
+    // Verify HR
+    const hrUser = await userCollection.findOne({ email: hrEmail, role: "HR" });
+    if (!hrUser) return res.status(403).json({ success: false, message: "Unauthorized" });
+
+    // Verify affiliation
+    const affiliation = await employeeAffiliationsCollection.findOne({
+      hrEmail,
+      employeeEmail,
+      status: "active",
+    });
+    if (!affiliation) {
+      return res.status(403).json({
+        success: false,
+        message: "Employee not affiliated with your company",
+      });
+    }
+
+    // Get asset
+    const asset = await assetCollection.findOne({ _id: new ObjectId(assetId), hrEmail });
+    if (!asset || asset.productQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Asset not available or out of stock",
+      });
+    }
+
+// prevent duplicate assing
+const existingAssignment = await assignedAssetsCollection.findOne({
+  assetId: new ObjectId(assetId),
+  employeeEmail,
+  status: "assigned",
+});
+
+if (existingAssignment) {
+  return res.status(409).json({
+    success: false,
+    message: "This asset is already assigned to this employee. Cannot assign again.",
+  });
+}
+
+    // Deduct quantity
+    const updateResult = await assetCollection.updateOne(
+      { _id: new ObjectId(assetId), productQuantity: { $gt: 0 } },
+      { $inc: { productQuantity: -1, availableQuantity: -1 } }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(400).json({ success: false, message: "Asset out of stock" });
+    }
+
+    // Create assigned asset
+    await assignedAssetsCollection.insertOne({
+      assetId: new ObjectId(assetId),
+      assetName: asset.productName,
+      assetImage: asset.productImage,
+      assetType: asset.productType,
+      employeeEmail,
+      employeeName: affiliation.employeeName,
+      hrEmail,
+      companyName: asset.companyName,
+      assignmentDate: new Date(),
+      returnDate: null,
+      status: "assigned",
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Asset assigned directly to employee",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Failed to assign asset" });
+  }
+});
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } catch (error) {
