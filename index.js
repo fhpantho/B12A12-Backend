@@ -913,6 +913,64 @@ app.get("/my-team", async (req, res) => {
   }
 });
 
+
+// GET: Asset type distribution for pie chart
+app.get("/analytics/asset-types", async (req, res) => {
+  try {
+    const { hrEmail } = req.query;
+    const query = hrEmail ? { hrEmail } : {};
+
+    const pipeline = [
+      { $match: query },
+      {
+        $group: {
+          _id: "$productType",
+          count: { $sum: 1 },
+        },
+      },
+    ];
+
+    const result = await assetCollection.aggregate(pipeline).toArray();
+
+    const distribution = {
+      Returnable: 0,
+      "Non-returnable": 0,
+    };
+    result.forEach(item => {
+      distribution[item._id] = item.count;
+    });
+
+    res.json({ success: true, data: distribution });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+// GET: Top 5 most requested assets
+app.get("/analytics/top-requested", async (req, res) => {
+  try {
+    const { hrEmail } = req.query;
+
+    const pipeline = [
+      { $match: hrEmail ? { hrEmail } : {} },
+      {
+        $group: {
+          _id: "$assetName",
+          requestCount: { $sum: 1 },
+        },
+      },
+      { $sort: { requestCount: -1 } },
+      { $limit: 5 },
+    ];
+
+    const result = await requestCollection.aggregate(pipeline).toArray();
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } catch (error) {
