@@ -624,6 +624,295 @@ async function run() {
       }
     });
 
+    // GET: Employee affiliations
+app.get("/employee-affiliations", async (req, res) => {
+  try {
+    const { employeeEmail } = req.query;
+    if (!employeeEmail) {
+      return res.status(400).json({ message: "employeeEmail required" });
+    }
+    const affiliations = await employeeAffiliationsCollection
+      .find({ employeeEmail, status: "active" })
+      .sort({ affiliationDate: -1 })
+      .toArray();
+    res.json({ success: true, data: affiliations });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+// PATCH: Update user profile (name, dateOfBirth, photo/companyLogo)
+app.patch("/user/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+    const { name, dateOfBirth, photo } = req.body; // photo for employee, companyLogo for HR
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    // Find the user
+    const user = await userCollection.findOne({ email });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Build update fields
+    const updateFields = {};
+    if (name) updateFields.name = name.trim();
+    if (dateOfBirth) updateFields.dateOfBirth = new Date(dateOfBirth);
+    if (photo) {
+      if (user.role === "EMPLOYEE") {
+        updateFields.photo = photo;
+      } else if (user.role === "HR") {
+        updateFields.companyLogo = photo; // Allow HR to update company logo
+      }
+    }
+
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    // Perform update
+    const result = await userCollection.updateOne(
+      { email },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found during update",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error("Error updating profile:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update profile",
+    });
+  }
+});
+
+// GET: Fetch all affiliated employees for this HR
+app.get("/my-employees", async (req, res) => {
+  try {
+    const { hrEmail } = req.query;
+
+    if (!hrEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail is required",
+      });
+    }
+
+    // Find HR to get current count and limit
+    const hrUser = await userCollection.findOne({ email: hrEmail, role: "HR" });
+    if (!hrUser) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // Fetch active affiliations
+    const affiliations = await employeeAffiliationsCollection
+      .find({ hrEmail, status: "active" })
+      .toArray();
+
+    // Fetch assigned asset count per employee
+    const employeeEmails = affiliations.map(aff => aff.employeeEmail);
+    const assetCounts = await assignedAssetsCollection.aggregate([
+      {
+        $match: {
+          employeeEmail: { $in: employeeEmails },
+          status: "assigned"
+        }
+      },
+      {
+        $group: {
+          _id: "$employeeEmail",
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    // Map asset counts
+    const assetCountMap = {};
+    assetCounts.forEach(item => {
+      assetCountMap[item._id] = item.count;
+    });
+
+    // Combine data
+    const employees = affiliations.map(aff => ({
+      _id: aff._id,
+      name: aff.employeeName,
+      email: aff.employeeEmail,
+      photo: "", // Will be filled from users collection if needed
+      joinDate: aff.affiliationDate,
+      assetsCount: assetCountMap[aff.employeeEmail] || 0,
+    }));
+
+    // Optional: Enrich with photo from users collection
+    for (let emp of employees) {
+      const user = await userCollection.findOne({ email: emp.email, role: "EMPLOYEE" });
+      if (user?.photo) emp.photo = user.photo;
+    }
+
+    res.status(200).json({
+      success: true,
+      currentEmployees: hrUser.currentEmployees,
+      packageLimit: hrUser.packageLimit,
+      employees,
+    });
+  } catch (error) {
+    console.error("Error fetching employees:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch employees",
+    });
+  }
+});
+
+// PATCH: Remove employee from team (HR only)
+app.patch("/remove-employee", async (req, res) => {
+  try {
+    const { hrEmail, employeeEmail } = req.body;
+
+    if (!hrEmail || !employeeEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail and employeeEmail required",
+      });
+    }
+
+    // Verify HR
+    const hrUser = await userCollection.findOne({ email: hrEmail, role: "HR" });
+    if (!hrUser) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Deactivate affiliation
+    const affiliationResult = await employeeAffiliationsCollection.updateOne(
+      { hrEmail, employeeEmail, status: "active" },
+      { $set: { status: "inactive" } }
+    );
+
+    if (affiliationResult.modifiedCount === 0) {
+      return res.status(404).json({ success: false, message: "Employee not found in your team" });
+    }
+
+    // Return all assigned assets (set to returned, increment stock)
+    const assigned = await assignedAssetsCollection.find({ employeeEmail, hrEmail, status: "assigned" }).toArray();
+
+    for (let assignment of assigned) {
+      // Return asset: increment quantity
+      await assetCollection.updateOne(
+        { _id: assignment.assetId },
+        { $inc: { productQuantity: 1, availableQuantity: 1 } }
+      );
+
+      // Mark as returned
+      await assignedAssetsCollection.updateOne(
+        { _id: assignment._id },
+        { $set: { status: "returned", returnDate: new Date() } }
+      );
+    }
+
+    // Decrement current employee count
+    await userCollection.updateOne(
+      { email: hrEmail },
+      { $inc: { currentEmployees: -1 } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Employee removed from team successfully",
+      returnedAssets: assigned.length,
+    });
+  } catch (error) {
+    console.error("Error removing employee:", error);
+    res.status(500).json({ success: false, message: "Failed to remove employee" });
+  }
+});
+
+// GET: Fetch team members for a specific company (by companyName)
+app.get("/my-team", async (req, res) => {
+  try {
+    const { companyName, employeeEmail } = req.query;
+
+    if (!companyName || !employeeEmail) {
+      return res.status(400).json({ message: "companyName and employeeEmail required" });
+    }
+
+    // Get all affiliated employees in this company
+    const teamAffiliations = await employeeAffiliationsCollection
+      .find({ companyName, status: "active" })
+      .toArray();
+
+    const teamEmails = teamAffiliations.map(aff => aff.employeeEmail);
+
+    // Fetch user details
+    const teamMembers = await userCollection
+      .find({ email: { $in: teamEmails }, role: "EMPLOYEE" })
+      .toArray();
+
+    // Map with affiliation data
+    const colleagues = teamMembers.map(member => {
+      const aff = teamAffiliations.find(a => a.employeeEmail === member.email);
+      return {
+        name: member.name,
+        email: member.email,
+        photo: member.photo || "",
+        joinDate: aff?.affiliationDate || null,
+        dateOfBirth: member.dateOfBirth || null,
+      };
+    });
+
+    // Exclude current user
+    const filteredColleagues = colleagues.filter(c => c.email !== employeeEmail);
+
+    // Upcoming birthdays (current month)
+    const currentMonth = new Date().getMonth();
+    const upcomingBirthdays = filteredColleagues
+      .filter(c => {
+        if (!c.dateOfBirth) return false;
+        const birthMonth = new Date(c.dateOfBirth).getMonth();
+        return birthMonth === currentMonth;
+      })
+      .sort((a, b) => {
+        const dayA = new Date(a.dateOfBirth).getDate();
+        const dayB = new Date(b.dateOfBirth).getDate();
+        return dayA - dayB;
+      });
+
+    res.json({
+      success: true,
+      colleagues: filteredColleagues,
+      upcomingBirthdays,
+      total: filteredColleagues.length,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false });
+  }
+});
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } catch (error) {
