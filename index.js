@@ -41,7 +41,8 @@ async function run() {
     const userCollection = db.collection("UserInfo");
     const assetCollection = db.collection("assetCollection")
     const requestCollection = db.collection("requestCollection");
-    const affilationCollection = db.collection("affilationCollection")
+    const employeeAffiliationsCollection = db.collection("employeeAffiliationsCollection")
+    const assignedAssetsCollection = db.collection("assignedAssetsCollection")
 
     console.log("✅ MongoDB connected successfully");
 
@@ -668,6 +669,157 @@ app.get("/asset-requests", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Server error while fetching requests",
+    });
+  }
+});
+
+// PATCH: Approve an asset request (HR only) - WITH EMPLOYEE LIMIT CHECK
+app.patch("/asset-request/approve/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { hrEmail } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request ID",
+      });
+    }
+
+    if (!hrEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "hrEmail is required",
+      });
+    }
+
+    // Find the pending request
+    const request = await requestCollection.findOne({ 
+      _id: new ObjectId(id),
+      requestStatus: "pending" 
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending request not found",
+      });
+    }
+
+    // Authorization
+    if (request.hrEmail !== hrEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // Get HR user to check package limit
+    const hrUser = await userCollection.findOne({ email: hrEmail, role: "HR" });
+    if (!hrUser) {
+      return res.status(403).json({
+        success: false,
+        message: "HR account not found",
+      });
+    }
+
+    // Check if this approval would affiliate a NEW employee
+    const existingAffiliation = await employeeAffiliationsCollection.findOne({
+      employeeEmail: request.requesterEmail,
+      hrEmail: hrEmail,
+      status: "active",
+    });
+
+    const isNewEmployee = !existingAffiliation;
+
+    if (isNewEmployee) {
+      // Check employee limit
+      if (hrUser.currentEmployees >= hrUser.packageLimit) {
+        return res.status(403).json({
+          success: false,
+          message: `Cannot approve: Employee limit reached (${hrUser.currentEmployees}/${hrUser.packageLimit}). Upgrade your package to add more employees.`,
+        });
+      }
+    }
+
+    // Get asset and check stock
+    const asset = await assetCollection.findOne({ _id: request.assetId });
+    if (!asset || asset.productQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Asset is out of stock",
+      });
+    }
+
+    // 1. Deduct asset quantity (with optimistic check)
+    const assetUpdate = await assetCollection.updateOne(
+      { _id: request.assetId, productQuantity: { $gt: 0 } },
+      { $inc: { productQuantity: -1, availableQuantity: -1 } }
+    );
+
+    if (assetUpdate.modifiedCount === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Asset out of stock — approval failed",
+      });
+    }
+
+    // 2. Mark request as approved
+    await requestCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          requestStatus: "approved",
+          approvalDate: new Date(),
+        },
+      }
+    );
+
+    // 3. Assign asset to employee
+    await assignedAssetsCollection.insertOne({
+      assetId: request.assetId,
+      assetName: request.assetName,
+      assetImage: asset.productImage,
+      assetType: request.assetType,
+      employeeEmail: request.requesterEmail,
+      employeeName: request.requesterName,
+      hrEmail: request.hrEmail,
+      companyName: request.companyName,
+      assignmentDate: new Date(),
+      returnDate: null,
+      status: "assigned",
+    });
+
+    // 4. Create affiliation if new employee AND increment currentEmployees
+    if (isNewEmployee) {
+      await employeeAffiliationsCollection.insertOne({
+        employeeEmail: request.requesterEmail,
+        employeeName: request.requesterName,
+        hrEmail: request.hrEmail,
+        companyName: request.companyName,
+        companyLogo: hrUser.companyLogo || "",
+        affiliationDate: new Date(),
+        status: "active",
+      });
+
+      // Increment current employee count
+      await userCollection.updateOne(
+        { email: hrEmail },
+        { $inc: { currentEmployees: 1 } }
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Request approved and asset assigned successfully",
+      newEmployeeAdded: isNewEmployee,
+    });
+
+  } catch (error) {
+    console.error("Error approving request:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error during approval",
     });
   }
 });
