@@ -3,3 +3,4 @@ node_modules
 
 serviceAccountKey.json
 URI = mongodb+srv://FahimHossen13:FahimHossen13@curd-operation.qdpi2ox.mongodb.net/?appName=curd-operation
+.vercel
