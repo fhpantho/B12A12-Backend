@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const admin = require('./firebaseAdmin');
+const admin = require('../firebaseAdmin');
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.PORT || 5000;
@@ -1077,6 +1077,4 @@ if (existingAssignment) {
 
 run().catch(console.dir);
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+module.exports = app;
