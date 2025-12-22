@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const admin = require('./firebaseAdmin');
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.PORT || 5000;
@@ -228,36 +229,44 @@ async function run() {
     });
 
     /* GET: Assets — newest first */
-    app.get("/assetcollection", async (req, res) => {
-      try {
-        const { email, search } = req.query;
-        const query = {};
+app.get("/assetcollection", async (req, res) => {
+  try {
+    const { search } = req.query;
+    let page = parseInt(req.query.page) || 1;
+    let limit = parseInt(req.query.limit) || 10;
+    page = page < 1 ? 1 : page;
+    limit = limit < 1 ? 10 : limit;
 
-        if (email) {
-          query.hrEmail = email;
-        } else {
-          query.productQuantity = { $gt: 0 };
-        }
+    const query = { productQuantity: { $gt: 0 } };
 
-        if (search) {
-          query.productName = { $regex: search.trim(), $options: "i" };
-        }
+    if (search) {
+      query.productName = { $regex: search.trim(), $options: "i" };
+    }
 
-        const result = await assetCollection
-          .find(query)
-          .sort({ _id: -1 }) // Newest first
-          .toArray();
+    const total = await assetCollection.countDocuments(query);
+    const assets = await assetCollection
+      .find(query)
+      .sort({ _id: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .toArray();
 
-        res.status(200).json({
-          success: true,
-          count: result.length,
-          data: result,
-        });
-      } catch (error) {
-        console.error("Error fetching assets:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch assets" });
-      }
+    res.status(200).json({
+      success: true,
+      data: assets,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        hasNext: page < Math.ceil(total / limit),
+        hasPrev: page > 1,
+      },
     });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Failed to fetch assets" });
+  }
+});
 
     /* PATCH: Update asset (HR only) */
     app.patch("/assetcollection/:id", async (req, res) => {
@@ -768,7 +777,7 @@ app.get("/my-employees", async (req, res) => {
       assetsCount: assetCountMap[aff.employeeEmail] || 0,
     }));
 
-    // Optional: Enrich with photo from users collection
+// Enrich with photo from users collection
     for (let emp of employees) {
       const user = await userCollection.findOne({ email: emp.email, role: "EMPLOYEE" });
       if (user?.photo) emp.photo = user.photo;
