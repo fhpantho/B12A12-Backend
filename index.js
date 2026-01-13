@@ -6,15 +6,44 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = process.env.URI;
 
 const app = express();
+const admin = require("firebase-admin");
+
+const serviceAccount = require("./firebaseadminkey.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
 
 /* MIDDLEWARES */
 app.use(express.json());
 app.use(
   cors({
     origin: ["http://localhost:5173", "https://assetversefhpantho.netlify.app"],
+    methods: ["GET", "POST", "PATCH", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
+
+
+const verifyFirebaseToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization; // standard header
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      console.log("missing header");
+      return res.status(401).send({ message: "Unauthorized access" });
+    }
+
+    const token = authHeader.split(" ")[1]; // actual token
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken; // attach user info to request
+    next();
+  } catch (err) {
+    console.error("Invalid token:", err);
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+};
 
 /* BASIC ROUTE */
 app.get("/", (req, res) => {
@@ -150,7 +179,7 @@ app.post("/user", async (req, res) => {
 });
 
 /* ADD NEW ASSET (HR ONLY) */
-app.post("/assetcollection", async (req, res) => {
+app.post("/assetcollection", verifyFirebaseToken, async (req, res) => {
   try {
     const { productName, productImage, productType, productQuantity, hrEmail, companyName } = req.body;
 
@@ -194,21 +223,39 @@ app.post("/assetcollection", async (req, res) => {
 });
 
 /* GET: Assets — with pagination & search */
-app.get("/assetcollection", async (req, res) => {
+app.get("/assetcollection",verifyFirebaseToken, async (req, res) => {
   try {
     let page = parseInt(req.query.page) || 1;
     let limit = parseInt(req.query.limit) || 10;
-    const { search } = req.query;
+    const { search, email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "HR email required" });
+    }
 
     page = page < 1 ? 1 : page;
     limit = limit < 1 ? 10 : limit;
 
-    const { assetCollection } = await getCollections();
+    const { assetCollection, userCollection } = await getCollections();
 
-    const query = { productQuantity: { $gt: 0 } };
-    if (search) query.productName = { $regex: search.trim(), $options: "i" };
+    // ✅ Verify HR
+    const hrUser = await userCollection.findOne({ email, role: "HR" });
+    if (!hrUser) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    // ✅ CRITICAL FIX: filter by hrEmail
+    const query = {
+      hrEmail: email,
+      productQuantity: { $gt: 0 },
+    };
+
+    if (search) {
+      query.productName = { $regex: search.trim(), $options: "i" };
+    }
 
     const total = await assetCollection.countDocuments(query);
+
     const assets = await assetCollection
       .find(query)
       .sort({ _id: -1 })
@@ -232,9 +279,33 @@ app.get("/assetcollection", async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to fetch assets" });
   }
 });
+app.get("/employee-assets", verifyFirebaseToken, async (req, res) => {
+  try {
+    const { assetCollection } = await getCollections(); // ✅ FIX
+
+    const assets = await assetCollection
+      .find({ availableQuantity: { $gt: 0 } }) // optional safety
+      .sort({ _id: -1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      data: assets,
+    });
+  } catch (error) {
+    console.error("Employee assets error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch assets",
+    });
+  }
+});
+
+
+
 
 /* PATCH: Update asset (HR only) */
-app.patch("/assetcollection/:id", async (req, res) => {
+app.patch("/assetcollection/:id",verifyFirebaseToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { productName, productQuantity, productImage, hrEmail } = req.body;
@@ -281,7 +352,7 @@ app.patch("/assetcollection/:id", async (req, res) => {
 });
 
 /* DELETE: Remove asset (HR only) */
-app.delete("/assetcollection/:id", async (req, res) => {
+app.delete("/assetcollection/:id",verifyFirebaseToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { hrEmail } = req.body;
@@ -318,7 +389,7 @@ app.delete("/assetcollection/:id", async (req, res) => {
 });
 
 /* POST: Create asset request */
-app.post("/asset-requests", async (req, res) => {
+app.post("/asset-requests",verifyFirebaseToken, async (req, res) => {
   try {
     const { assetId, requesterEmail, note } = req.body;
     if (!assetId || !requesterEmail) return res.status(400).json({ message: "Missing required fields" });
@@ -374,7 +445,7 @@ app.post("/asset-requests", async (req, res) => {
 });
 
 /* PATCH: Reject request */
-app.patch("/asset-request/reject/:id", async (req, res) => {
+app.patch("/asset-request/reject/:id",verifyFirebaseToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { hrEmail } = req.body;
@@ -402,7 +473,7 @@ app.patch("/asset-request/reject/:id", async (req, res) => {
 });
 
 /* GET: Asset requests */
-app.get("/asset-requests", async (req, res) => {
+app.get("/asset-requests",verifyFirebaseToken, async (req, res) => {
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ success: false, message: "Email required" });
@@ -422,7 +493,7 @@ app.get("/asset-requests", async (req, res) => {
 });
 
 /* PATCH: Approve request */
-app.patch("/asset-request/approve/:id", async (req, res) => {
+app.patch("/asset-request/approve/:id",verifyFirebaseToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { hrEmail } = req.body;
@@ -516,7 +587,7 @@ app.patch("/asset-request/approve/:id", async (req, res) => {
 });
 
 /* GET: Assigned assets for employee */
-app.get("/assigned-assets", async (req, res) => {
+app.get("/assigned-assets",verifyFirebaseToken, async (req, res) => {
   try {
     const { employeeEmail } = req.query;
     if (!employeeEmail) return res.status(400).json({ success: false, message: "employeeEmail required" });
@@ -540,7 +611,7 @@ app.get("/assigned-assets", async (req, res) => {
 });
 
 /* GET: Employee affiliations */
-app.get("/employee-affiliations", async (req, res) => {
+app.get("/employee-affiliations",verifyFirebaseToken, async (req, res) => {
   try {
     const { employeeEmail } = req.query;
     if (!employeeEmail) return res.status(400).json({ message: "employeeEmail required" });
@@ -559,7 +630,7 @@ app.get("/employee-affiliations", async (req, res) => {
 });
 
 /* PATCH: Update user profile */
-app.patch("/user/:email", async (req, res) => {
+app.patch("/user/:email",verifyFirebaseToken, async (req, res) => {
   try {
     const { email } = req.params;
     const { name, dateOfBirth, photo } = req.body;
@@ -596,7 +667,7 @@ app.patch("/user/:email", async (req, res) => {
 });
 
 /* GET: My employees (HR) */
-app.get("/my-employees", async (req, res) => {
+app.get("/my-employees",verifyFirebaseToken, async (req, res) => {
   try {
     const { hrEmail } = req.query;
     if (!hrEmail) return res.status(400).json({ success: false, message: "hrEmail required" });
@@ -652,7 +723,7 @@ app.get("/my-employees", async (req, res) => {
 });
 
 /* PATCH: Remove employee from team */
-app.patch("/remove-employee", async (req, res) => {
+app.patch("/remove-employee",verifyFirebaseToken, async (req, res) => {
   try {
     const { hrEmail, employeeEmail } = req.body;
     if (!hrEmail || !employeeEmail) {
@@ -708,7 +779,7 @@ app.patch("/remove-employee", async (req, res) => {
 });
 
 /* GET: Team members (for employee) */
-app.get("/my-team", async (req, res) => {
+app.get("/my-team",verifyFirebaseToken, async (req, res) => {
   try {
     const { companyName, employeeEmail } = req.query;
     if (!companyName || !employeeEmail) {
@@ -758,7 +829,7 @@ app.get("/my-team", async (req, res) => {
 });
 
 /* GET: Analytics - Asset types distribution */
-app.get("/analytics/asset-types", async (req, res) => {
+app.get("/analytics/asset-types",verifyFirebaseToken, async (req, res) => {
   try {
     const { hrEmail } = req.query;
     const { assetCollection } = await getCollections();
@@ -803,7 +874,7 @@ app.get("/analytics/top-requested", async (req, res) => {
 });
 
 /* PATCH: Direct asset assignment by HR */
-app.patch("/direct-assign", async (req, res) => {
+app.patch("/direct-assign",verifyFirebaseToken, async (req, res) => {
   try {
     const { hrEmail, employeeEmail, assetId } = req.body;
 
@@ -869,3 +940,9 @@ app.patch("/direct-assign", async (req, res) => {
 });
 
 module.exports = app;
+
+const port = process.env.PORT || 5000;
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
