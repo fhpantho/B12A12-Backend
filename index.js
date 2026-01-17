@@ -1,4 +1,6 @@
 require("dotenv").config();
+const stripe = require('stripe')(process.env.STRIPEKEY);
+
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -95,6 +97,8 @@ async function getCollections() {
     requestCollection: db.collection("requestCollection"),
     employeeAffiliationsCollection: db.collection("employeeAffiliationsCollection"),
     assignedAssetsCollection: db.collection("assignedAssetsCollection"),
+    pakageCollections : db.collection("pakageCollections"),
+    paymentCollection: db.collection("Payments")
   };
 }
 
@@ -936,6 +940,176 @@ app.patch("/direct-assign",verifyFirebaseToken, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, message: "Failed to assign asset" });
+  }
+});
+
+/* GET : Geting pakage information */
+app.get("/packages", verifyFirebaseToken , async(req, res) => {
+  try {
+    const { pakageCollections } = await getCollections();
+    const pakages = await pakageCollections.find({}).toArray();
+    res.status(200).json(pakages);
+  }
+  catch {
+    res.status(500).json({
+        message: "Failed to fetch plans",
+        error: error.message
+      });
+  }
+})
+
+
+
+app.get("/packages/:id", verifyFirebaseToken, async (req, res) => {
+  try {
+    const { pakageCollections } = await getCollections();
+    const { id } = req.params;
+
+    // validate MongoDB ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid package ID" });
+    }
+
+    const query = { _id: new ObjectId(id) };
+    const packageData = await pakageCollections.findOne(query);
+
+    if (!packageData) {
+      return res.status(404).json({ message: "Package not found" });
+    }
+
+    res.status(200).json(packageData);
+  } catch (error) {
+    res.status(500).json({
+      message: "Failed to fetch package",
+      error: error.message,
+    });
+  }
+});
+
+app.post("/payment-checkout-session", async (req, res) => {
+  const paymentInfo = req.body;
+  const {hrEmail, id} = paymentInfo;
+  const { pakageCollections } = await getCollections();
+  const query = { _id: new ObjectId(id) };
+  const packageData = await pakageCollections.findOne(query);
+  const {name , price, employeeLimit} = packageData
+
+
+  const session = await stripe.checkout.sessions.create(
+    {
+    line_items: [
+      {
+        price_data : {
+          currency : 'USD',
+          unit_amount : price * 100,
+          product_data : {
+            name : name,
+
+
+
+          }
+        },
+        
+        quantity: 1,
+      },
+    ],
+    customer_email :hrEmail,
+    mode: 'payment',
+    metadata : {
+
+      package_id : id,
+      employee_limit : employeeLimit
+
+
+    },
+    success_url: `${process.env.DOMAIN}/dashboard/hr/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.DOMAIN}/dashboard/hr/payment-cancel`,
+  }
+  )
+  console.log(session);
+  res.send({ url: session.url });
+
+})
+
+app.patch("/payment-success", async (req, res) => {
+  try {
+    const sessionID = req.query.session_id;
+    if (!sessionID) {
+      return res.status(400).json({ message: "Session ID missing" });
+    }
+
+    // 🔐 Retrieve Stripe session
+    const session = await stripe.checkout.sessions.retrieve(sessionID);
+
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({ message: "Payment not completed" });
+    }
+
+    const hrEmail = session.customer_email;
+    const package_id = session.metadata.package_id;
+
+    const {
+      pakageCollections,
+      userCollection,
+      paymentCollection,
+    } = await getCollections();
+
+    // 🔍 Get package info
+    const packageData = await pakageCollections.findOne({
+      _id: new ObjectId(package_id),
+    });
+
+    if (!packageData) {
+      return res.status(404).json({ message: "Package not found" });
+    }
+
+    const { name, price, employeeLimit } = packageData;
+
+    // 🚫 DUPLICATE PAYMENT CHECK
+    const existingPayment = await paymentCollection.findOne({
+      hrEmail,
+      packageName: name,
+      status: "completed",
+    });
+
+    if (existingPayment) {
+      return res.status(409).json({
+        message: "You already paid for this package",
+      });
+    }
+
+    // 💾 STORE PAYMENT TRANSACTION
+    await paymentCollection.insertOne({
+      hrEmail,
+      packageName: name,
+      employeeLimit,
+      amount: price,
+      transactionId: session.id,
+      paymentDate: new Date(),
+      status: "completed",
+    });
+
+    // 🔄 UPDATE USER SUBSCRIPTION
+    await userCollection.updateOne(
+      { email: hrEmail },
+      {
+        $set: {
+          subscription: name,
+          packageLimit: employeeLimit,
+        },
+      }
+    );
+
+    return res.json({
+      success: true,
+      message: "Payment successful & subscription updated",
+    });
+  } catch (error) {
+    console.error("Payment success error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Payment processing failed",
+    });
   }
 });
 
