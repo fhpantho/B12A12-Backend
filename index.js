@@ -633,42 +633,89 @@ app.get("/employee-affiliations",verifyFirebaseToken, async (req, res) => {
   }
 });
 
-/* PATCH: Update user profile */
-app.patch("/user/:email",verifyFirebaseToken, async (req, res) => {
+app.patch("/user/:email", verifyFirebaseToken, async (req, res) => {
   try {
-    const { email } = req.params;
+    const email = req.params.email?.toLowerCase();
     const { name, dateOfBirth, photo } = req.body;
 
-    if (!email) return res.status(400).json({ success: false, message: "Email is required" });
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
 
     const { userCollection } = await getCollections();
+
     const user = await userCollection.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
 
     const updateFields = {};
-    if (name) updateFields.name = name.trim();
-    if (dateOfBirth) updateFields.dateOfBirth = new Date(dateOfBirth);
-    if (photo) {
-      if (user.role === "EMPLOYEE") updateFields.photo = photo;
-      else if (user.role === "HR") updateFields.companyLogo = photo;
+
+    /* =====================
+       NAME
+       ===================== */
+    if (typeof name === "string" && name.trim()) {
+      updateFields.name = name.trim();
+    }
+
+    /* =====================
+       DATE OF BIRTH
+       ===================== */
+    if (dateOfBirth !== undefined) {
+      updateFields.dateOfBirth = dateOfBirth
+        ? new Date(dateOfBirth)
+        : null;
+    }
+
+    /* =====================
+       PHOTO (ROLE SAFE)
+       ===================== */
+    if (typeof photo === "string" && photo.trim()) {
+      if (user.role === "EMPLOYEE") {
+        updateFields.photo = photo.trim();
+      } else if (user.role === "HR") {
+        updateFields.companyLogo = photo.trim();
+      }
     }
 
     if (Object.keys(updateFields).length === 0) {
-      return res.status(400).json({ success: false, message: "No fields to update" });
+      return res.status(400).json({
+        success: false,
+        message: "No valid fields to update",
+      });
     }
 
-    const result = await userCollection.updateOne({ email }, { $set: updateFields });
+    const result = await userCollection.updateOne(
+      { email },
+      { $set: updateFields }
+    );
 
-    res.json({
+    return res.json({
       success: true,
       message: "Profile updated successfully",
       modifiedCount: result.modifiedCount,
+      updatedFields: updateFields,
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to update profile" });
+    console.error("Profile update error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update profile",
+    });
   }
 });
+
+
+
+
+
 
 /* GET: My employees (HR) */
 app.get("/my-employees",verifyFirebaseToken, async (req, res) => {
